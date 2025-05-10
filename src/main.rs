@@ -402,13 +402,7 @@ async fn generate_adb_command(
 ) -> Result<()> {
     let mut adb_cmd = adb.lock().await;
     adb_cmd.set_component(component);
-
-    // 디버그 모드일 때 XML 요소 출력
-    if tracing::enabled!(tracing::Level::DEBUG) {
-        if let Some(xml) = &component.xml_element {
-            debug!("\n\x1b[1;35mComponent XML:\x1b[0m\n{}", xml);
-        }
-    }
+    info!("Component: {}", component.name);
 
     // LLM URL이 지정되지 않은 경우 기본 파라미터만 사용
     if llm_config.api_url.is_empty() {
@@ -466,11 +460,15 @@ async fn generate_adb_command(
         component.manifest_path.display(),
         component.manifest_line
     );
+    if let Some(xml) = &component.xml_element {
+        println!("\x1b[1;35mComponent XML:\x1b[0m\n{}", xml);
+    }
     
     // sharedUserId가 있는 경우 표시
     if let Some(shared_user_id) = &component.shared_user_id {
         println!("\x1b[1;35mNote: This component has sharedUserId: {}\x1b[0m", shared_user_id);
     }
     
+    println!();
     Ok(())
 }
