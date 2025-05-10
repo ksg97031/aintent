@@ -34,8 +34,9 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
     let mut current_mimeTypes = HashSet::new();
     let mut current_intent_filter_permissions = HashSet::new();
     let mut in_intent_filter = false;
-    let mut depth = 0;
+    let mut _depth = 0;
     let mut current_line = 0;
+    let mut current_xml = String::new();
 
     // 매니페스트 디렉토리 경로 가져오기
     let manifest_dir = file_path.parent()
@@ -45,7 +46,7 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
     for event in parser {
         match event {
             Ok(XmlEvent::StartElement { name, attributes, .. }) => {
-                depth += 1;
+                _depth += 1;
                 current_line += 1;
                 match name.local_name.as_str() {
                     "manifest" => {
@@ -58,17 +59,20 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                         }
                     }
                     "activity" | "service" | "receiver" | "provider" => {
-                        let mut component_type = name.local_name.clone();
+                        let component_type = name.local_name.clone();
                         let mut component_name = String::new();
                         let mut exported = false;
+                        current_xml = format!("<{}", name.local_name);
 
-                        for attr in attributes {
+                        for attr in &attributes {
                             match attr.name.local_name.as_str() {
-                                "name" => component_name = attr.value,
+                                "name" => component_name = attr.value.clone(),
                                 "exported" => exported = attr.value == "true",
                                 _ => {}
                             }
+                            current_xml.push_str(&format!(" {}={}", attr.name.local_name, attr.value));
                         }
+                        current_xml.push('>');
 
                         if !component_name.is_empty() {
                             let full_name = if component_name.starts_with('.') {
@@ -77,18 +81,26 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                                 component_name
                             };
 
-                            let mut component = Component::new(
-                                full_name,
-                                current_package.clone(),
+                            let component = Component {
+                                name: full_name.clone(),
+                                package: current_package.clone(),
                                 component_type,
                                 exported,
-                                manifest_dir.clone(),
-                                file_path.clone(),
-                                current_line,
-                            );
-                            if let Some(shared_user_id) = &current_shared_user_id {
-                                component.set_shared_user_id(shared_user_id.clone());
-                            }
+                                manifest_path: file_path.clone(),
+                                manifest_line: current_line,
+                                manifest_dir: manifest_dir.clone(),
+                                class_name: full_name,
+                                actions: HashSet::new(),
+                                categories: HashSet::new(),
+                                data_schemes: HashSet::new(),
+                                data_hosts: HashSet::new(),
+                                data_paths: HashSet::new(),
+                                data_mimeTypes: HashSet::new(),
+                                permissions: Vec::new(),
+                                intent_filter_permissions: Vec::new(),
+                                shared_user_id: current_shared_user_id.clone(),
+                                xml_element: Some(current_xml.clone()),
+                            };
                             current_component = Some(component);
                         }
                     }
@@ -146,16 +158,16 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                 }
             }
             Ok(XmlEvent::EndElement { name, .. }) => {
-                depth -= 1;
+                _depth -= 1;
                 match name.local_name.as_str() {
                     "activity" | "service" | "receiver" | "provider" => {
                         if let Some(mut component) = current_component.take() {
                             component.actions = current_actions.clone();
                             component.categories = current_categories.clone();
-                            component.data_schemes = current_schemes.iter().cloned().collect();
-                            component.data_hosts = current_hosts.iter().cloned().collect();
-                            component.data_paths = current_paths.iter().cloned().collect();
-                            component.data_mimeTypes = current_mimeTypes.iter().cloned().collect();
+                            component.data_schemes = current_schemes.clone();
+                            component.data_hosts = current_hosts.clone();
+                            component.data_paths = current_paths.clone();
+                            component.data_mimeTypes = current_mimeTypes.clone();
                             component.intent_filter_permissions = current_intent_filter_permissions.iter().cloned().collect();
 
                             if let Some(package) = &package_filter {

@@ -9,7 +9,7 @@ use crate::llm::{LLMConfig, fetch_available_models};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use anyhow::{Result, Context};
-use tracing::{info, error, warn, Level};
+use tracing::{info, error, warn, debug, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod manifest;
@@ -258,7 +258,7 @@ async fn main() -> Result<()> {
     setup_logging(&args.log_level)?;
     
     // LLM 설정
-    let llm_config = setup_llm_config(&args)?;
+    let llm_config = setup_llm_config(&args).await?;
     
     // 매니페스트 파서 설정
     let manifest_dir = setup_manifest_parser(&args)?;
@@ -296,13 +296,34 @@ fn setup_logging(log_level: &str) -> Result<()> {
     Ok(())
 }
 
-fn setup_llm_config(args: &Args) -> Result<LLMConfig> {
-    let config = LLMConfig::new(
-        args.llm_url.clone().unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
-        args.llm_key.clone(),
-        args.llm_model.clone().unwrap_or_else(|| "gpt-3.5-turbo".to_string()),
-    );
-    
+async fn setup_llm_config(args: &Args) -> Result<LLMConfig> {
+    let config = match &args.llm_url {
+        None => {
+            // LLM URL이 없는 경우 빈 설정 반환
+            LLMConfig::new(
+                String::new(),
+                None,
+                String::new(),
+            )
+        }
+        Some(url) => {
+            // LLM URL이 있는 경우 모델 선택
+            let model = if let Some(model) = &args.llm_model {
+                model.clone()
+            } else {
+                // 모델이 지정되지 않은 경우 인터랙티브 선택
+                select_model(url, args.llm_key.as_deref(), None)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to select model: {}", e))?
+            };
+
+            LLMConfig::new(
+                url.clone(),
+                args.llm_key.clone(),
+                model,
+            )
+        }
+    };
     Ok(config)
 }
 
@@ -382,10 +403,19 @@ async fn generate_adb_command(
     let mut adb_cmd = adb.lock().await;
     adb_cmd.set_component(component);
 
+    // 디버그 모드일 때 XML 요소 출력
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        if let Some(xml) = &component.xml_element {
+            debug!("\n\x1b[1;35mComponent XML:\x1b[0m\n{}", xml);
+        }
+    }
+
     // LLM URL이 지정되지 않은 경우 기본 파라미터만 사용
     if llm_config.api_url.is_empty() {
         info!("LLM URL not provided. Using basic parameters from manifest.");
         let basic_params = llm::analyzer::generate_basic_params(component);
+        llm::analyzer::validate_adb_command(&basic_params)
+            .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
         adb_cmd.set_intent_params(&basic_params);
     } else {
         // Try to find and analyze source file
@@ -394,11 +424,22 @@ async fn generate_adb_command(
                 // Source file found, use LLM analysis
                 match llm::analyzer::analyze_intent(component, &source_file.to_string_lossy(), llm_config).await {
                     Ok(analysis) => {
+                        // LLM 분석 결과 검증
+                        llm::analyzer::validate_adb_command(&analysis.intent_params)
+                            .context(format!(
+                                "Failed to validate LLM analysis parameters for component: {}\nSource file: {}\nComponent type: {}\nPackage: {}",
+                                component.name,
+                                source_file.display(),
+                                component.component_type,
+                                component.package
+                            ))?;
                         adb_cmd.set_intent_params(&analysis.intent_params);
                     }
                     Err(e) => {
                         warn!("Failed to analyze intent with LLM: {}. Using basic parameters.", e);
                         let basic_params = llm::analyzer::generate_basic_params(component);
+                        llm::analyzer::validate_adb_command(&basic_params)
+                            .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
                         adb_cmd.set_intent_params(&basic_params);
                     }
                 }
@@ -407,6 +448,8 @@ async fn generate_adb_command(
                 // Source file not found, use basic parameters
                 info!("Source file not found for {}. Using basic parameters from manifest.", component.name);
                 let basic_params = llm::analyzer::generate_basic_params(component);
+                llm::analyzer::validate_adb_command(&basic_params)
+                    .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
                 adb_cmd.set_intent_params(&basic_params);
             }
         }

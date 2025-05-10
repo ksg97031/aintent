@@ -22,6 +22,7 @@ pub struct Component {
     pub shared_user_id: Option<String>,
     pub manifest_path: PathBuf,  // AndroidManifest.xml 파일 경로
     pub manifest_line: usize,    // 컴포넌트 선언의 줄 번호
+    pub xml_element: Option<String>,
 }
 
 impl Component {
@@ -33,28 +34,37 @@ impl Component {
         manifest_dir: PathBuf,
         manifest_path: PathBuf,
         manifest_line: usize,
+        class_name: String,
+        actions: Vec<String>,
+        categories: Vec<String>,
+        data_schemes: Vec<String>,
+        data_hosts: Vec<String>,
+        data_paths: Vec<String>,
+        data_mimeTypes: Vec<String>,
+        permissions: Vec<String>,
+        intent_filter_permissions: Vec<String>,
+        shared_user_id: Option<String>,
+        xml_element: Option<String>,
     ) -> Self {
-        // 클래스 이름 추출
-        let class_name = name.split('.').last().unwrap_or(&name).to_string();
-        
         Self {
             name,
             class_name,
             package,
             component_type,
             exported,
-            actions: HashSet::new(),
-            categories: HashSet::new(),
-            data_schemes: HashSet::new(),
-            data_hosts: HashSet::new(),
-            data_paths: HashSet::new(),
-            data_mimeTypes: HashSet::new(),
-            permissions: Vec::new(),
-            intent_filter_permissions: Vec::new(),
+            actions: HashSet::from_iter(actions),
+            categories: HashSet::from_iter(categories),
+            data_schemes: HashSet::from_iter(data_schemes),
+            data_hosts: HashSet::from_iter(data_hosts),
+            data_paths: HashSet::from_iter(data_paths),
+            data_mimeTypes: HashSet::from_iter(data_mimeTypes),
+            permissions,
+            intent_filter_permissions,
             manifest_dir,
-            shared_user_id: None,
+            shared_user_id,
             manifest_path,
             manifest_line,
+            xml_element,
         }
     }
 
@@ -116,6 +126,7 @@ impl Component {
             shared_user_id: None,
             manifest_path: PathBuf::new(),
             manifest_line: 0,
+            xml_element: None,
         })
     }
 

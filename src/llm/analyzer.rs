@@ -5,7 +5,7 @@ use std::fmt;
 use reqwest::Client;
 use serde_json::{json, Value};
 use anyhow::{Result, Context};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use crate::manifest::Component;
 use super::config::LLMConfig;
 use walkdir;
@@ -74,32 +74,67 @@ fn extract_intent_context(lines: &[String]) -> Result<String> {
     let mut context_lines = Vec::new();
     let mut in_intent_block = false;
     let mut block_depth = 0;
+    let mut last_intent_line = 0;
     
-    for line in lines {
-        let is_intent_line = 
-            line.contains("intent") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            line.contains("getIntent()") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            line.contains("extras") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            line.contains("bundle") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            line.contains("args") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            line.contains("savedInstanceState") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            line.contains("getArguments()") && (line.contains(".get") || line.contains(".has") || line.contains(".resolve") || line.contains(".getData") || line.contains(".getExtras") || line.contains(".getAction")) ||
-            (line.contains("extras") || line.contains("bundle") || line.contains("args")) && 
-                (line.contains(".getString") || line.contains(".getInt") || line.contains(".getBoolean") || 
-                 line.contains(".getLong") || line.contains(".getFloat") || line.contains(".getDouble") || 
-                 line.contains(".getParcelable")) ||
-            (line.contains("getIntent()") || line.contains(".")) && 
-                (line.contains(".getQueryParameter") || line.contains(".hasCategory") || line.contains(".getCategories")) ||
-            line.contains(".getIntent") || line.contains(".hasExtra") || line.contains(".resolveType") || line.contains(".resolveActivity");
+    // Intent 관련 메서드 패턴
+    let intent_patterns = [
+        // Action 관련
+        "getAction", "hasAction", "setAction",
+        // Category 관련
+        "getCategories", "hasCategory", "addCategory",
+        // Data 관련
+        "getData", "setData", "getScheme", "getHost", "getPath", "getQuery",
+        // Type 관련
+        "getType", "setType", "resolveType",
+        // Extra 관련
+        "getExtras", "getStringExtra", "getIntExtra", "getBooleanExtra",
+        "getLongExtra", "getFloatExtra", "getDoubleExtra", "getParcelableExtra",
+        // Flag 관련
+        "getFlags", "addFlags", "setFlags",
+        // Component 관련
+        "getComponent", "setComponent", "resolveActivity",
+        // URI 관련
+        "toUri", "parseUri", "normalize",
+        // Bundle 관련
+        "getBundle", "putExtra", "putExtras"
+    ];
+    
+    for (i, line) in lines.iter().enumerate() {
+        let is_intent_line = intent_patterns.iter().any(|pattern| line.contains(pattern)) ||
+            (line.contains("intent") && (
+                line.contains(".get") || 
+                line.contains(".set") || 
+                line.contains(".has") || 
+                line.contains(".add") ||
+                line.contains(".put")
+            )) ||
+            (line.contains("getIntent()") && (
+                line.contains(".get") || 
+                line.contains(".set") || 
+                line.contains(".has") || 
+                line.contains(".add") ||
+                line.contains(".put")
+            ));
 
         if is_intent_line {
             has_intent = true;
             in_intent_block = true;
             block_depth = 0;
+            last_intent_line = i;
+            
+            // 이전 컨텍스트 라인 추가 (최대 5줄)
+            let start = i.saturating_sub(5);
+            for j in start..i {
+                if !context_lines.contains(&lines[j]) {
+                    context_lines.push(lines[j].clone());
+                }
+            }
         }
         
         if in_intent_block {
-            context_lines.push(line.clone());
+            if !context_lines.contains(line) {
+                context_lines.push(line.clone());
+            }
             
             if line.contains('{') {
                 block_depth += 1;
@@ -108,6 +143,13 @@ fn extract_intent_context(lines: &[String]) -> Result<String> {
                 block_depth -= 1;
                 if block_depth == 0 {
                     in_intent_block = false;
+                    // 이후 컨텍스트 라인 추가 (최대 5줄)
+                    let end = (i + 6).min(lines.len());
+                    for j in (i + 1)..end {
+                        if !context_lines.contains(&lines[j]) {
+                            context_lines.push(lines[j].clone());
+                        }
+                    }
                 }
             }
         }
@@ -116,6 +158,14 @@ fn extract_intent_context(lines: &[String]) -> Result<String> {
     if !has_intent {
         info!("No intent-related code found in the source file");
         return Ok(String::new());
+    }
+
+    // 마지막 Intent 라인 이후의 컨텍스트 추가
+    let end = (last_intent_line + 6).min(lines.len());
+    for i in (last_intent_line + 1)..end {
+        if !context_lines.contains(&lines[i]) {
+            context_lines.push(lines[i].clone());
+        }
     }
 
     Ok(context_lines.join("\n"))
@@ -137,7 +187,29 @@ async fn call_llm_api(context: &str, config: &LLMConfig) -> Result<Value> {
     }
 
     let prompt = format!(
-        "Analyze the following Intent code and suggest possible parameters for ADB command. For URI data from getData(), use -d flag. For example, if you see 'intent.getData().toString()', extract the URI and use it with -d flag. Return a JSON object with the following schema:\n\n{{\"params\": [{{\"name\": \"param_name\", \"type\": \"param_type\", \"value\": \"param_value\", \"flag\": \"-a/-c/-e/-d/-t\"}}], \"confidence\": 0.95}}\n\nCode to analyze:\n{}",
+        "Analyze the following Android Intent code and extract all possible parameters for ADB command. Focus on:
+1. Intent actions (getAction(), hasAction())
+2. Categories (getCategories(), hasCategory())
+3. Data URIs (getData(), getScheme(), getHost(), getPath())
+4. MIME types (getType(), resolveType())
+5. Extras (getExtras(), getStringExtra(), getIntExtra(), etc.)
+6. Flags (getFlags(), addFlags())
+
+Return a JSON object with the following schema:
+{{
+    \"params\": [
+        {{
+            \"name\": \"param_name\",
+            \"type\": \"param_type\",
+            \"value\": \"param_value\",
+            \"flag\": \"-a/-c/-d/-t/-e/-f\"
+        }}
+    ],
+    \"confidence\": 0.95
+}}
+
+Code to analyze:
+{}",
         context
     );
 
@@ -146,14 +218,14 @@ async fn call_llm_api(context: &str, config: &LLMConfig) -> Result<Value> {
         "messages": [
             {
                 "role": "system",
-                "content": "You are an expert in Android development and ADB commands. Your task is to analyze Intent code and suggest appropriate parameters for ADB commands. For URI data from getData(), use -d flag. For example, if you see 'intent.getData().toString()', extract the URI and use it with -d flag. Focus on: -a for action, -c for category, -d for data URI, -t for MIME type, -e for extras. Always respond with a valid JSON object containing 'params' array with parameter details and 'confidence' number. Do not include any other text or explanation."
+                "content": "You are an expert in Android development and ADB commands. Your task is to analyze Intent code and extract all possible parameters for ADB commands. Focus on finding all intent-related code patterns and their corresponding ADB parameters. Always respond with a valid JSON object containing 'params' array with parameter details and 'confidence' number. Do not include any other text or explanation."
             },
             {
                 "role": "user",
                 "content": prompt
             }
         ],
-        "temperature": 0.7,
+        "temperature": 0.3,
         "max_tokens": 4096,
         "response_format": {
             "type": "json_schema",
@@ -168,7 +240,7 @@ async fn call_llm_api(context: &str, config: &LLMConfig) -> Result<Value> {
                                 "properties": {
                                     "name": {
                                         "type": "string",
-                                        "description": "The name of the parameter (for data URI, use 'data')"
+                                        "description": "The name of the parameter (e.g., action, category, data, type, extra)"
                                     },
                                     "type": {
                                         "type": "string",
@@ -180,8 +252,8 @@ async fn call_llm_api(context: &str, config: &LLMConfig) -> Result<Value> {
                                     },
                                     "flag": {
                                         "type": "string",
-                                        "description": "The ADB flag for the parameter (-a for action, -c for category, -d for data URI, -t for MIME type, -e for extra)",
-                                        "enum": ["-a", "-c", "-d", "-t", "-e"]
+                                        "description": "The ADB flag for the parameter (-a for action, -c for category, -d for data URI, -t for MIME type, -e for extra, -f for flag)",
+                                        "enum": ["-a", "-c", "-d", "-t", "-e", "-f"]
                                     }
                                 },
                                 "required": ["name", "type", "value", "flag"]
@@ -241,17 +313,127 @@ fn parse_llm_response(analysis: &Value) -> Result<Vec<IntentParameter>> {
         .iter()
         .filter_map(|v| {
             let param = v.as_object()?;
+            
+            // 필수 필드 검증
+            let name = param["name"].as_str()?;
+            let param_type = param["type"].as_str()?;
+            let flag = param["flag"].as_str()?;
+            
+            // flag 값 검증
+            if !["-a", "-c", "-d", "-t", "-e", "-f"].contains(&flag) {
+                error!("Invalid flag value: {} for parameter: {}", flag, name);
+                return None;
+            }
+            
+            // value가 있는 경우 사용, 없는 경우 기본값 생성
+            let value = if let Some(v) = param["value"].as_str() {
+                v.to_string()
+            } else {
+                // value가 없는 경우에만 기본값 생성
+                match flag {
+                    "-a" => format!("android.intent.action.{}", name),
+                    "-c" => format!("android.intent.category.{}", name),
+                    "-d" => format!("content://{}/{}", name, "example"),
+                    "-t" => format!("{}/{}", name, "example"),
+                    "-e" => match param_type.to_lowercase().as_str() {
+                        "string" => "example_string".to_string(),
+                        "integer" => "1".to_string(),
+                        "boolean" => "true".to_string(),
+                        "long" => "1".to_string(),
+                        "float" => "1.0".to_string(),
+                        "double" => "1.0".to_string(),
+                        "uri" => format!("content://{}/{}", name, "example"),
+                        _ => "example".to_string()
+                    },
+                    "-f" => "1".to_string(),
+                    _ => "example".to_string()
+                }
+            };
+            
             Some(IntentParameter {
-                name: param["name"].as_str()?.to_string(),
-                param_type: param["type"].as_str()?.to_string(),
-                value: param["value"].as_str()?.to_string(),
-                flag: param["flag"].as_str()?.to_string(),
+                name: name.to_string(),
+                param_type: param_type.to_string(),
+                value,
+                flag: flag.to_string(),
             })
         })
         .collect::<Vec<IntentParameter>>();
 
+    if params.is_empty() {
+        warn!("No valid parameters found in LLM response");
+    } else {
+        info!("Successfully parsed {} parameters from LLM response", params.len());
+    }
+
     Ok(params)
 }
+
+fn validate_param_value(flag: &str, _value: &str, param_type: &str) -> bool {
+    // value는 임의로 지정 가능하므로 항상 true 반환
+    true
+}
+
+pub fn validate_adb_command(params: &[IntentParameter]) -> Result<()> {
+    let mut has_action = false;
+    let mut warnings: Vec<String> = Vec::new();
+    
+    // 파라미터가 비어있는 경우
+    if params.is_empty() {
+        warn!("No parameters provided for ADB command");
+        return Ok(());
+    }
+    
+    for param in params {
+        match param.flag.as_str() {
+            "-a" => {
+                has_action = true;
+                if param.value.is_empty() {
+                    warnings.push(format!("Warning: Action parameter '{}' has empty value", param.name));
+                }
+            },
+            "-c" => {
+                if param.value.is_empty() {
+                    warnings.push(format!("Warning: Category parameter '{}' has empty value", param.name));
+                }
+            },
+            "-d" => {
+                if param.value.is_empty() {
+                    warnings.push(format!("Warning: Data parameter '{}' has empty value", param.name));
+                }
+            },
+            "-t" => {
+                if param.value.is_empty() {
+                    warnings.push(format!("Warning: Type parameter '{}' has empty value", param.name));
+                }
+            },
+            "-e" => {
+                if param.value.is_empty() {
+                    warnings.push(format!("Warning: Extra parameter '{}' has empty value", param.name));
+                }
+            },
+            "-f" => {
+                if param.value.is_empty() {
+                    warnings.push(format!("Warning: Flag parameter '{}' has empty value", param.name));
+                }
+            },
+            _ => warnings.push(format!("Warning: Unknown flag '{}' for parameter '{}'", param.flag, param.name))
+        }
+    }
+    
+    // 최소한의 검증: action이 있어야 함
+    if !has_action {
+        warn!("ADB command must have at least one action (-a)");
+        return Ok(());
+    }
+    
+    // 경고 메시지가 있으면 출력
+    if !warnings.is_empty() {
+        warn!("{}", warnings.join("\n"));
+    }
+    
+    Ok(())
+}
+
 pub fn find_source_file(component: &Component, _source_dir: &str) -> Result<PathBuf> {
     info!("Looking for source file for component: {}", component.name);
     
@@ -504,4 +686,8 @@ pub fn generate_basic_params(component: &Component) -> Vec<IntentParameter> {
     }
 
     params
+}
+
+pub fn convert_to_intent_parameters(params: &[IntentParameter]) -> Vec<IntentParameter> {
+    params.to_vec()
 } 
