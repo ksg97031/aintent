@@ -302,6 +302,7 @@ fn setup_llm_config(args: &Args) -> Result<LLMConfig> {
         args.llm_key.clone(),
         args.llm_model.clone().unwrap_or_else(|| "gpt-3.5-turbo".to_string()),
     );
+    
     Ok(config)
 }
 
@@ -381,26 +382,33 @@ async fn generate_adb_command(
     let mut adb_cmd = adb.lock().await;
     adb_cmd.set_component(component);
 
-    // Try to find and analyze source file
-    match llm::analyzer::find_source_file(component, "") {
-        Ok(source_file) => {
-            // Source file found, use LLM analysis
-            match llm::analyzer::analyze_intent(component, &source_file.to_string_lossy(), llm_config).await {
-                Ok(analysis) => {
-                    adb_cmd.set_intent_params(&analysis.intent_params);
-                }
-                Err(e) => {
-                    warn!("Failed to analyze intent with LLM: {}. Using basic parameters.", e);
-                    let basic_params = llm::analyzer::generate_basic_params(component);
-                    adb_cmd.set_intent_params(&basic_params);
+    // LLM URL이 지정되지 않은 경우 기본 파라미터만 사용
+    if llm_config.api_url.is_empty() {
+        info!("LLM URL not provided. Using basic parameters from manifest.");
+        let basic_params = llm::analyzer::generate_basic_params(component);
+        adb_cmd.set_intent_params(&basic_params);
+    } else {
+        // Try to find and analyze source file
+        match llm::analyzer::find_source_file(component, "") {
+            Ok(source_file) => {
+                // Source file found, use LLM analysis
+                match llm::analyzer::analyze_intent(component, &source_file.to_string_lossy(), llm_config).await {
+                    Ok(analysis) => {
+                        adb_cmd.set_intent_params(&analysis.intent_params);
+                    }
+                    Err(e) => {
+                        warn!("Failed to analyze intent with LLM: {}. Using basic parameters.", e);
+                        let basic_params = llm::analyzer::generate_basic_params(component);
+                        adb_cmd.set_intent_params(&basic_params);
+                    }
                 }
             }
-        }
-        Err(_) => {
-            // Source file not found, use basic parameters
-            info!("Source file not found for {}. Using basic parameters from manifest.", component.name);
-            let basic_params = llm::analyzer::generate_basic_params(component);
-            adb_cmd.set_intent_params(&basic_params);
+            Err(_) => {
+                // Source file not found, use basic parameters
+                info!("Source file not found for {}. Using basic parameters from manifest.", component.name);
+                let basic_params = llm::analyzer::generate_basic_params(component);
+                adb_cmd.set_intent_params(&basic_params);
+            }
         }
     }
     

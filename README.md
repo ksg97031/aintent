@@ -6,7 +6,7 @@ AIntent is a powerful tool for analyzing Android components and generating ADB c
 
 - 🔍 **Manifest Analysis**: Parses AndroidManifest.xml files to extract component information
 - 🎯 **Component Detection**: Identifies activities, services, receivers, and providers
-- 🤖 **LLM Integration**: Uses Language Model to analyze source code and extract intent parameters
+- 🤖 **LLM Integration**: Uses Language Model to analyze source code and extract intent parameters (optional)
 - 📱 **ADB Command Generation**: Generates ADB commands with proper intent parameters
 - 🔒 **Permission Analysis**: Analyzes component permissions and protection levels
 - 🎨 **Colorful Output**: Provides clear, color-coded output for better readability
@@ -25,7 +25,7 @@ cargo build --release
 ## Usage
 
 ```bash
-# Basic usage
+# Basic usage (without LLM analysis)
 ./target/release/aintent -d /path/to/android/project
 
 # With package filter
@@ -37,7 +37,7 @@ cargo build --release
 # Exclude components with sharedUserId
 ./target/release/aintent -d /path/to/android/project --no-shared-userid
 
-# Use custom LLM configuration
+# Use LLM for advanced intent analysis
 ./target/release/aintent -d /path/to/android/project --llm-url http://localhost:1234/v1 --llm-model gpt-3.5-turbo
 ```
 
@@ -48,9 +48,9 @@ cargo build --release
 - `--max-permission-level`: Maximum permission protection level (normal, dangerous, signature)
 - `--alive-only`: Show only components from installed packages
 - `--no-shared-userid`: Exclude components with sharedUserId
-- `--llm-url`: LLM API URL (default: http://localhost:1234/v1)
+- `--llm-url`: LLM API URL (optional, for advanced intent analysis)
 - `--llm-key`: LLM API key (optional)
-- `--llm-model`: LLM model name or number
+- `--llm-model`: LLM model name or number (optional)
 - `--log-level`: Logging level (debug, info, warn, error)
 
 ## Output Format
