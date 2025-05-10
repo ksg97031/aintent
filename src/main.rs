@@ -463,7 +463,11 @@ async fn generate_adb_command(
     if let Some(xml) = &component.xml_element {
         println!("\x1b[1;35mComponent XML:\x1b[0m\n{}", xml);
     }
-    
+    // Display source file information if available
+    if let Ok(source_file) = llm::analyzer::find_source_file(component, "") {
+        println!("\x1b[1;32mSource file: {}\x1b[0m", source_file.display());
+    }
+
     // sharedUserId가 있는 경우 표시
     if let Some(shared_user_id) = &component.shared_user_id {
         println!("\x1b[1;35mNote: This component has sharedUserId: {}\x1b[0m", shared_user_id);
