@@ -146,7 +146,6 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
 
     let mut cursor = QueryCursor::new();
     let mut parameters = Vec::new();
-    let mut seen_params = HashSet::new();
     let matches = cursor.matches(&query, tree.root_node(), source_code.as_bytes());
 
     // Iterate over matches using Iterator trait (tree-sitter 0.20.9)
@@ -170,14 +169,11 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
             if method_name == "getData" {
                 // Handle getData() case
                 let param_id = format!("data:uri:{}", method_name);
-                if !seen_params.contains(&param_id) {
-                    seen_params.insert(param_id);
-                    parameters.push(IntentParameter {
-                        name: "data".to_string(),
-                        value: "uri".to_string(),
-                        type_: "uri".to_string(),
-                    });
-                }
+                parameters.push(IntentParameter {
+                    name: "data".to_string(),
+                    value: "uri".to_string(),
+                    type_: "uri".to_string(),
+                });
                 continue;
             }
 
@@ -223,14 +219,11 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
                 // Create unique identifier for parameter to avoid duplicates
                 // Include method name in the param_id to better handle duplicates
                 let param_id = format!("{}:{}:{}", key, type_, method_name);
-                if !seen_params.contains(&param_id) {
-                    seen_params.insert(param_id);
-                    parameters.push(IntentParameter {
-                        name: key,
-                        value,
-                        type_,
-                    });
-                }
+                parameters.push(IntentParameter {
+                    name: key,
+                    value,
+                    type_,
+                });
             }
         }
     }
@@ -239,15 +232,27 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
 }
 
 pub fn intent_parameters_to_adb_args(parameters: &[IntentParameter]) -> Vec<String> {
-    parameters.iter()
-        .map(|param| {
-            match param.type_.as_str() {
-                "string" => format!("--es {} {}", param.name, param.value.trim_matches('"')),
-                "int" => format!("--ei {} {}", param.name, param.value),
-                "float" => format!("--ef {} {}", param.name, param.value),
-                "boolean" => format!("--ez {} {}", param.name, param.value),
-                _ => format!("--es {} {}", param.name, param.value),
-            }
-        })
-        .collect()
+    let mut result = Vec::new();
+    let mut seen_params = std::collections::HashSet::new();
+    
+    for param in parameters {
+        let param_key = format!("{}:{}:{}", param.name, param.type_, param.value);
+        if seen_params.contains(&param_key) {
+            continue;
+        }
+        
+        seen_params.insert(param_key);
+        
+        let arg = match param.type_.as_str() {
+            "string" => format!("--es {} {}", param.name, param.value.trim_matches('"')),
+            "int" => format!("--ei {} {}", param.name, param.value),
+            "float" => format!("--ef {} {}", param.name, param.value),
+            "boolean" => format!("--ez {} {}", param.name, param.value),
+            _ => format!("--es {} {}", param.name, param.value),
+        };
+        
+        result.push(arg);
+    }
+    
+    result
 }
