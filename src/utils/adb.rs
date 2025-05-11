@@ -5,6 +5,7 @@ use crate::llm::analyzer::IntentParameter;
 pub struct ADBCommand {
     component: Option<Component>,
     intent_params: Vec<IntentParameter>,
+    extra_args: Vec<String>,
 }
 
 impl ADBCommand {
@@ -12,6 +13,7 @@ impl ADBCommand {
         Ok(Self {
             component: None,
             intent_params: Vec::new(),
+            extra_args: Vec::new(),
         })
     }
 
@@ -21,6 +23,10 @@ impl ADBCommand {
 
     pub fn set_intent_params(&mut self, params: &[IntentParameter]) {
         self.intent_params = params.to_vec();
+    }
+
+    pub fn add_extra_arg(&mut self, arg: &str) {
+        self.extra_args.push(arg.to_string());
     }
 
     pub fn build_command(&self) -> Result<String> {
@@ -55,7 +61,7 @@ impl ADBCommand {
             component_name
         };
 
-        let mut cmd = format!(
+        let mut command = format!(
             "adb shell am start -n {}/{}",
             component.package,
             final_component_name
@@ -63,11 +69,16 @@ impl ADBCommand {
 
         // Add intent parameters
         for param in &self.intent_params {
-            cmd.push(' ');
-            cmd.push_str(&param.to_string());
+            command.push(' ');
+            command.push_str(&param.to_string());
         }
 
-        Ok(cmd)
+        // Add extra arguments
+        for arg in &self.extra_args {
+            command.push_str(&format!(" {}", arg));
+        }
+
+        Ok(command)
     }
 }
 

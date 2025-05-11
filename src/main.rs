@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 use std::process::Command;
-use std::collections::HashMap;
 use clap::Parser;
 use crate::manifest::{Component, find_manifest_files, parse_manifest};
 use crate::permissions::get_permission_protection_level;
 use crate::utils::adb::ADBCommand;
+use crate::utils::source::{find_source_file, parse_intent_parameters, intent_parameters_to_adb_args};
 use crate::llm::{LLMConfig, fetch_available_models};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use anyhow::{Result, Context};
-use tracing::{info, error, warn, debug, Level};
+use tracing::{info, error, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-
+use tree_sitter::Parser as TreeSitterParser;
 mod manifest;
 mod permissions;
 mod utils;
@@ -117,91 +117,6 @@ fn get_alive_packages() -> Result<Vec<String>> {
         .collect();
 
     Ok(packages)
-}
-
-struct SourceFileCache {
-    files: HashMap<String, Vec<PathBuf>>,
-    manifest_dir: PathBuf,
-}
-
-impl SourceFileCache {
-    fn new(manifest_path: &PathBuf) -> Self {
-        Self {
-            files: HashMap::new(),
-            manifest_dir: manifest_path.parent().unwrap().to_path_buf(),
-        }
-    }
-
-    fn scan_directory(&mut self, dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-        let entries = std::fs::read_dir(dir)?;
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_dir() {
-                self.scan_directory(&path)?;
-            } else if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                if ext_str == "java" || ext_str == "kt" {
-                    if let Some(file_name) = path.file_stem() {
-                        let name = file_name.to_string_lossy().to_string();
-                        self.files.entry(name).or_default().push(path);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn find_component_file(&self, component: &Component) -> Option<PathBuf> {
-        let component_name = component.name.split('.').last().unwrap_or(&component.name);
-        
-        // 1. 정확한 이름 매칭
-        if let Some(files) = self.files.get(component_name) {
-            if files.len() == 1 {
-                return Some(files[0].clone());
-            }
-        }
-
-        // 2. 부분 이름 매칭
-        let mut matches = Vec::new();
-        for (name, files) in &self.files {
-            if name.contains(component_name) || component_name.contains(name) {
-                matches.extend(files.clone());
-            }
-        }
-
-        // 매니페스트 디렉토리 하위에 있는 파일만 필터링
-        let manifest_matches: Vec<_> = matches.into_iter()
-            .filter(|path| path.starts_with(&self.manifest_dir))
-            .collect();
-
-        if manifest_matches.len() == 1 {
-            Some(manifest_matches[0].clone())
-        } else {
-            None
-        }
-    }
-}
-
-fn find_source_dir(manifest_path: &PathBuf) -> Option<PathBuf> {
-    let mut cache = SourceFileCache::new(manifest_path);
-    let manifest_dir = cache.manifest_dir.clone();
-    
-    // 매니페스트 디렉토리와 그 하위 디렉토리 스캔
-    if let Err(e) = cache.scan_directory(&manifest_dir) {
-        eprintln!("소스 파일 스캔 중 오류 발생: {}", e);
-        return None;
-    }
-
-    // 스캔된 파일이 있는지 확인
-    if cache.files.is_empty() {
-        return None;
-    }
-
-    // 첫 번째 파일의 부모 디렉토리 반환
-    cache.files.values().next()
-        .and_then(|files| files.first())
-        .and_then(|path| path.parent())
-        .map(|p| p.to_path_buf())
 }
 
 async fn select_model(api_url: &str, api_key: Option<&str>, model_arg: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
@@ -407,30 +322,19 @@ async fn generate_adb_command(
     // LLM URL이 지정되지 않은 경우 기본 파라미터만 사용
     if llm_config.api_url.is_empty() {
         info!("LLM URL not provided. Using basic parameters from manifest.");
-        let basic_params = llm::analyzer::generate_basic_params(component);
-        llm::analyzer::validate_adb_command(&basic_params)
-            .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
-        adb_cmd.set_intent_params(&basic_params);
-    } else {
-        // Try to find and analyze source file
-        match llm::analyzer::find_source_file(component, "") {
+        match find_source_file(component, "") {
             Ok(source_file) => {
-                // Source file found, use LLM analysis
-                match llm::analyzer::analyze_intent(component, &source_file.to_string_lossy(), llm_config).await {
-                    Ok(analysis) => {
-                        // LLM 분석 결과 검증
-                        llm::analyzer::validate_adb_command(&analysis.intent_params)
-                            .context(format!(
-                                "Failed to validate LLM analysis parameters for component: {}\nSource file: {}\nComponent type: {}\nPackage: {}",
-                                component.name,
-                                source_file.display(),
-                                component.component_type,
-                                component.package
-                            ))?;
-                        adb_cmd.set_intent_params(&analysis.intent_params);
+                // Parse intent parameters from source code
+                match parse_intent_parameters(&source_file) {
+                    Ok(parameters) => {
+                        info!("Found {} intent parameters in source code", parameters.len());
+                        let adb_args = intent_parameters_to_adb_args(&parameters);
+                        for arg in adb_args {
+                            adb_cmd.add_extra_arg(&arg);
+                        }
                     }
                     Err(e) => {
-                        warn!("Failed to analyze intent with LLM: {}. Using basic parameters.", e);
+                        warn!("Failed to parse intent parameters: {}. Using basic parameters.", e);
                         let basic_params = llm::analyzer::generate_basic_params(component);
                         llm::analyzer::validate_adb_command(&basic_params)
                             .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
@@ -438,9 +342,52 @@ async fn generate_adb_command(
                     }
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                warn!("Could not find source file: {}. Using basic parameters.", e);
+                let basic_params = llm::analyzer::generate_basic_params(component);
+                llm::analyzer::validate_adb_command(&basic_params)
+                    .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
+                adb_cmd.set_intent_params(&basic_params);
+            }
+        }
+    } else {
+        // Try to find and analyze source file
+        match find_source_file(component, "") {
+            Ok(source_file) => {
+                // First try to parse intent parameters from source code
+                if let Ok(parameters) = parse_intent_parameters(&source_file) {
+                    info!("Found {} intent parameters in source code", parameters.len());
+                    let adb_args = intent_parameters_to_adb_args(&parameters);
+                    for arg in adb_args {
+                        adb_cmd.add_extra_arg(&arg);
+                    }
+                } else {
+                    // If parsing fails, fall back to LLM analysis
+                    match llm::analyzer::analyze_intent(component, &source_file.to_string_lossy(), llm_config).await {
+                        Ok(analysis) => {
+                            llm::analyzer::validate_adb_command(&analysis.intent_params)
+                                .context(format!(
+                                    "Failed to validate LLM analysis parameters for component: {}\nSource file: {}\nComponent type: {}\nPackage: {}",
+                                    component.name,
+                                    source_file.display(),
+                                    component.component_type,
+                                    component.package
+                                ))?;
+                            adb_cmd.set_intent_params(&analysis.intent_params);
+                        }
+                        Err(e) => {
+                            warn!("Failed to analyze intent with LLM: {}. Using basic parameters.", e);
+                            let basic_params = llm::analyzer::generate_basic_params(component);
+                            llm::analyzer::validate_adb_command(&basic_params)
+                                .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
+                            adb_cmd.set_intent_params(&basic_params);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
                 // Source file not found, use basic parameters
-                info!("Source file not found for {}. Using basic parameters from manifest.", component.name);
+                warn!("Could not find source file: {}. Using basic parameters.", e);
                 let basic_params = llm::analyzer::generate_basic_params(component);
                 llm::analyzer::validate_adb_command(&basic_params)
                     .context(format!("Failed to validate basic parameters for component: {}", component.name))?;
@@ -464,7 +411,7 @@ async fn generate_adb_command(
         println!("\x1b[1;35mComponent XML:\x1b[0m\n{}", xml);
     }
     // Display source file information if available
-    if let Ok(source_file) = llm::analyzer::find_source_file(component, "") {
+    if let Ok(source_file) = find_source_file(component, "") {
         println!("\x1b[1;32mSource file: {}\x1b[0m", source_file.display());
     }
 
