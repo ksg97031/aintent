@@ -26,7 +26,10 @@ impl ADBCommand {
     }
 
     pub fn add_extra_arg(&mut self, arg: &str) {
-        self.extra_args.push(arg.to_string());
+        // Check if the argument already exists to avoid duplicates
+        if !self.extra_args.contains(&arg.to_string()) {
+            self.extra_args.push(arg.to_string());
+        }
     }
 
     pub fn build_command(&self) -> Result<String> {

@@ -236,7 +236,7 @@ pub fn intent_parameters_to_adb_args(parameters: &[IntentParameter]) -> Vec<Stri
     let mut seen_params = std::collections::HashSet::new();
     
     for param in parameters {
-        let param_key = format!("{}:{}:{}", param.name, param.type_, param.value);
+        let param_key = format!("{}:{}", param.name, param.type_);
         if seen_params.contains(&param_key) {
             continue;
         }
