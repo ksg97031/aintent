@@ -123,56 +123,19 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
     let tree = parser.parse(&source_code, None)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse source code"))?;
 
-    // Refined query to find only `get.*Extra` methods
+    // Refined query to find only `get.*Extra` methods and `getData`
     let query = Query::new(
         language(),
         r#"
-        (method_invocation
-            object: [
-                (method_invocation
-                    name: (identifier) @intent_method
-                    (#eq? @intent_method "getIntent")
-                )
-                (identifier) @intent_var
-            ]
-            name: (identifier) @extra_method
-            arguments: (argument_list) @args
-            (#match? @extra_method "^get.*Extra$")
-        )
-        (method_invocation
-            object: (method_invocation
-                name: (identifier) @intent_method
-                (#eq? @intent_method "getIntent")
-            )
-            name: (identifier) @extra_method
-            arguments: (argument_list) @args
-            (#match? @extra_method "^get.*Extra$")
-        )
+        ;; Capture any method invocation that retrieves extras or data from an Intent
         (method_invocation
             object: (identifier) @intent_var
             name: (identifier) @extra_method
             arguments: (argument_list) @args
             (#match? @extra_method "^get.*Extra$")
         )
-        (method_invocation
-            object: [
-                (method_invocation
-                    name: (identifier) @intent_method
-                    (#eq? @intent_method "getIntent")
-                )
-                (identifier) @intent_var
-            ]
-            name: (identifier) @data_method
-            (#eq? @data_method "getData")
-        )
-        (method_invocation
-            object: (method_invocation
-                name: (identifier) @intent_method
-                (#eq? @intent_method "getIntent")
-            )
-            name: (identifier) @data_method
-            (#eq? @data_method "getData")
-        )
+
+        ;; Capture method invocations for getData
         (method_invocation
             object: (identifier) @intent_var
             name: (identifier) @data_method
@@ -185,36 +148,33 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
     let mut parameters = Vec::new();
     let mut seen_params = HashSet::new();
     let matches = cursor.matches(&query, tree.root_node(), source_code.as_bytes());
-    
+
     // Iterate over matches using Iterator trait (tree-sitter 0.20.9)
     for m in matches {
         let mut args_node = None;
         let mut method_name = None;
-        
+
+        // Capture method names and arguments
         for capture in m.captures {
             match capture.node.kind() {
                 "argument_list" => args_node = Some(capture.node),
                 "identifier" => {
-                    if let Some(field_name) = capture.node.parent().and_then(|n| n.field_name_for_child(capture.node.id() as u32)) {
-                        if field_name == "extra_method" || field_name == "data_method" {
-                            method_name = Some(capture.node.utf8_text(source_code.as_bytes())
-                                .unwrap_or("").to_string());
-                        }
-                    }
+                    method_name = Some(capture.node.utf8_text(source_code.as_bytes()).unwrap_or("").to_string());
                 },
                 _ => {}
             }
         }
-        
+
         if let Some(method_name) = method_name {
+            // Special case for getData()
             if method_name == "getData" {
                 // Handle getData() case
-                let param_id = "data:uri".to_string();
+                let param_id = format!("data:uri:{}", method_name);
                 if !seen_params.contains(&param_id) {
                     seen_params.insert(param_id);
                     parameters.push(IntentParameter {
                         name: "data".to_string(),
-                        value: "content://".to_string(), // Default value for data URI
+                        value: "uri".to_string(),
                         type_: "uri".to_string(),
                     });
                 }
@@ -251,17 +211,18 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
                     "unknown".to_string()
                 };
                 
-                // Get default value if provided
+                // Get default value if provided, otherwise use type as default
                 let value = if args.len() > 1 {
                     args[1].utf8_text(source_code.as_bytes())
-                        .unwrap_or(&key)
+                        .unwrap_or(&type_)
                         .to_string()
                 } else {
-                    key.clone()
+                    type_.clone()
                 };
                 
                 // Create unique identifier for parameter to avoid duplicates
-                let param_id = format!("{}:{}", key, type_);
+                // Include method name in the param_id to better handle duplicates
+                let param_id = format!("{}:{}:{}", key, type_, method_name);
                 if !seen_params.contains(&param_id) {
                     seen_params.insert(param_id);
                     parameters.push(IntentParameter {
