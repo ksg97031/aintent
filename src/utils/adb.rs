@@ -82,6 +82,7 @@ impl ADBCommand {
     }
 }
 
+#[allow(dead_code)]
 pub fn generate_adb_commands(component: &Component) -> Vec<String> {
     let mut commands = Vec::new();
     let component_type = match component.component_type.as_str() {
@@ -109,7 +110,7 @@ pub fn generate_adb_commands(component: &Component) -> Vec<String> {
 
     // action과 category가 없는 경우 기본 명령어만 추가
     if component.actions.is_empty() && component.categories.is_empty() && 
-       component.data_schemes.is_empty() && component.data_mimeTypes.is_empty() {
+       component.data_schemes.is_empty() && component.data_mime_types.is_empty() {
         commands.push(base_command);
         return commands;
     }
@@ -193,9 +194,9 @@ pub fn generate_adb_commands(component: &Component) -> Vec<String> {
                     }
                 }
             }
-        } else if !component.data_mimeTypes.is_empty() {
+        } else if !component.data_mime_types.is_empty() {
             // MIME 타입 추가
-            for mime_type in &component.data_mimeTypes {
+            for mime_type in &component.data_mime_types {
                 let mime_command = format!("{} -t \"{}\"", command, mime_type);
                 
                 // category 추가

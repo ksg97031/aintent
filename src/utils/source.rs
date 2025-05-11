@@ -1,6 +1,6 @@
-use std::path::{PathBuf, Path};
-use std::collections::HashMap;
-use anyhow::{Result, Context};
+use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use anyhow::Result;
 use crate::manifest::Component;
 use tree_sitter::{Parser, Query, QueryCursor};
 use tree_sitter_java::language;
@@ -75,6 +75,7 @@ impl SourceFileCache {
     }
 }
 
+#[allow(dead_code)]
 pub fn find_source_dir(manifest_path: &PathBuf) -> Option<PathBuf> {
     let mut cache = SourceFileCache::new(manifest_path);
     let manifest_dir = cache.manifest_dir.clone();
@@ -122,68 +123,152 @@ pub fn parse_intent_parameters(source_file: &PathBuf) -> Result<Vec<IntentParame
     let tree = parser.parse(&source_code, None)
         .ok_or_else(|| anyhow::anyhow!("Failed to parse source code"))?;
 
-    // Query to find getIntent() calls and their parameters
+    // Refined query to find only `get.*Extra` methods
     let query = Query::new(
         language(),
         r#"
         (method_invocation
-            name: (identifier) @method_name
+            object: [
+                (method_invocation
+                    name: (identifier) @intent_method
+                    (#eq? @intent_method "getIntent")
+                )
+                (identifier) @intent_var
+            ]
+            name: (identifier) @extra_method
             arguments: (argument_list) @args
-            (#eq? @method_name "getIntent")
+            (#match? @extra_method "^get.*Extra$")
+        )
+        (method_invocation
+            object: (method_invocation
+                name: (identifier) @intent_method
+                (#eq? @intent_method "getIntent")
+            )
+            name: (identifier) @extra_method
+            arguments: (argument_list) @args
+            (#match? @extra_method "^get.*Extra$")
+        )
+        (method_invocation
+            object: (identifier) @intent_var
+            name: (identifier) @extra_method
+            arguments: (argument_list) @args
+            (#match? @extra_method "^get.*Extra$")
+        )
+        (method_invocation
+            object: [
+                (method_invocation
+                    name: (identifier) @intent_method
+                    (#eq? @intent_method "getIntent")
+                )
+                (identifier) @intent_var
+            ]
+            name: (identifier) @data_method
+            (#eq? @data_method "getData")
+        )
+        (method_invocation
+            object: (method_invocation
+                name: (identifier) @intent_method
+                (#eq? @intent_method "getIntent")
+            )
+            name: (identifier) @data_method
+            (#eq? @data_method "getData")
+        )
+        (method_invocation
+            object: (identifier) @intent_var
+            name: (identifier) @data_method
+            (#eq? @data_method "getData")
         )
         "#
     ).expect("Failed to create query");
 
     let mut cursor = QueryCursor::new();
     let mut parameters = Vec::new();
+    let mut seen_params = HashSet::new();
     let matches = cursor.matches(&query, tree.root_node(), source_code.as_bytes());
     
     // Iterate over matches using Iterator trait (tree-sitter 0.20.9)
     for m in matches {
+        let mut args_node = None;
+        let mut method_name = None;
+        
         for capture in m.captures {
-            if capture.index == 1 { // args capture
-                let args_node = capture.node;
-                let args_text = args_node.utf8_text(source_code.as_bytes())
-                    .expect("Failed to get args text");
-
-                // Parse each argument
-                for child in args_node.children(&mut args_node.walk()) {
-                    if child.kind() == "assignment_expression" {
-                        let name_node = child.child_by_field_name("left")
-                            .expect("Failed to get name node");
-                        let value_node = child.child_by_field_name("right")
-                            .expect("Failed to get value node");
-
-                        let name = name_node.utf8_text(source_code.as_bytes())
-                            .expect("Failed to get name text")
-                            .trim()
-                            .to_string();
-
-                        let value = value_node.utf8_text(source_code.as_bytes())
-                            .expect("Failed to get value text")
-                            .trim()
-                            .to_string();
-
-                        // Determine parameter type based on value
-                        let type_ = if value.starts_with("\"") {
-                            "string".to_string()
-                        } else if value.parse::<i64>().is_ok() {
-                            "int".to_string()
-                        } else if value.parse::<f64>().is_ok() {
-                            "float".to_string()
-                        } else if value == "true" || value == "false" {
-                            "boolean".to_string()
-                        } else {
-                            "unknown".to_string()
-                        };
-
-                        println!("name: {}, value: {}, type_: {}", name, value, type_);
-                        parameters.push(IntentParameter {
-                            name,
-                            value,
-                            type_,
-                        });
+            match capture.node.kind() {
+                "argument_list" => args_node = Some(capture.node),
+                "identifier" => {
+                    if let Some(field_name) = capture.node.parent().and_then(|n| n.field_name_for_child(capture.node.id() as u32)) {
+                        if field_name == "extra_method" || field_name == "data_method" {
+                            method_name = Some(capture.node.utf8_text(source_code.as_bytes())
+                                .unwrap_or("").to_string());
+                        }
                     }
+                },
+                _ => {}
+            }
+        }
+        
+        if let Some(method_name) = method_name {
+            if method_name == "getData" {
+                // Handle getData() case
+                let param_id = "data:uri".to_string();
+                if !seen_params.contains(&param_id) {
+                    seen_params.insert(param_id);
+                    parameters.push(IntentParameter {
+                        name: "data".to_string(),
+                        value: "content://".to_string(), // Default value for data URI
+                        type_: "uri".to_string(),
+                    });
+                }
+                continue;
+            }
+
+            if let Some(args_node) = args_node {
+                // Extract parameter name and default value if any
+                let args = args_node.children(&mut args_node.walk())
+                    .filter(|n| n.kind() != "(" && n.kind() != ")" && n.kind() != ",")
+                    .collect::<Vec<_>>();
+                    
+                if args.is_empty() {
+                    continue;
+                }
+                
+                // Get parameter key name
+                let key_node = &args[0];
+                let key = key_node.utf8_text(source_code.as_bytes())
+                    .unwrap_or("unknown")
+                    .trim_matches('"')
+                    .to_string();
+                    
+                // Determine parameter type based on method name
+                let type_ = if method_name.contains("String") {
+                    "string".to_string()
+                } else if method_name.contains("Int") {
+                    "int".to_string()
+                } else if method_name.contains("Float") || method_name.contains("Double") {
+                    "float".to_string()
+                } else if method_name.contains("Boolean") {
+                    "boolean".to_string()
+                } else {
+                    "unknown".to_string()
+                };
+                
+                // Get default value if provided
+                let value = if args.len() > 1 {
+                    args[1].utf8_text(source_code.as_bytes())
+                        .unwrap_or(&key)
+                        .to_string()
+                } else {
+                    key.clone()
+                };
+                
+                // Create unique identifier for parameter to avoid duplicates
+                let param_id = format!("{}:{}", key, type_);
+                if !seen_params.contains(&param_id) {
+                    seen_params.insert(param_id);
+                    parameters.push(IntentParameter {
+                        name: key,
+                        value,
+                        type_,
+                    });
                 }
             }
         }
@@ -204,4 +289,4 @@ pub fn intent_parameters_to_adb_args(parameters: &[IntentParameter]) -> Vec<Stri
             }
         })
         .collect()
-} 
+}

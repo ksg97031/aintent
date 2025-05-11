@@ -28,11 +28,12 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
     let mut current_component = Option::<Component>::None;
     let mut current_actions = HashSet::new();
     let mut current_categories = HashSet::new();
-    let mut current_schemes = HashSet::new();
-    let mut current_hosts = HashSet::new();
-    let mut current_paths = HashSet::new();
-    let mut current_mimeTypes = HashSet::new();
-    let mut current_intent_filter_permissions = HashSet::new();
+    let mut current_data_schemes = HashSet::new();
+    let mut current_data_hosts = HashSet::new();
+    let mut current_data_paths = HashSet::new();
+    let mut current_mime_types = HashSet::new();
+    let _current_permissions: Vec<String> = Vec::new();
+    let mut current_intent_filter_permissions = Vec::new();
     let mut in_intent_filter = false;
     let mut _depth = 0;
     let mut current_line = 0;
@@ -95,7 +96,7 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                                 data_schemes: HashSet::new(),
                                 data_hosts: HashSet::new(),
                                 data_paths: HashSet::new(),
-                                data_mimeTypes: HashSet::new(),
+                                data_mime_types: HashSet::new(),
                                 permissions: Vec::new(),
                                 intent_filter_permissions: Vec::new(),
                                 shared_user_id: current_shared_user_id.clone(),
@@ -108,10 +109,10 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                         in_intent_filter = true;
                         current_actions.clear();
                         current_categories.clear();
-                        current_schemes.clear();
-                        current_hosts.clear();
-                        current_paths.clear();
-                        current_mimeTypes.clear();
+                        current_data_schemes.clear();
+                        current_data_hosts.clear();
+                        current_data_paths.clear();
+                        current_mime_types.clear();
                         current_intent_filter_permissions.clear();
                     }
                     "action" => {
@@ -136,10 +137,10 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                         if in_intent_filter {
                             for attr in attributes {
                                 match attr.name.local_name.as_str() {
-                                    "scheme" => current_schemes.insert(attr.value),
-                                    "host" => current_hosts.insert(attr.value),
-                                    "path" => current_paths.insert(attr.value),
-                                    "mimeType" => current_mimeTypes.insert(attr.value),
+                                    "scheme" => current_data_schemes.insert(attr.value),
+                                    "host" => current_data_hosts.insert(attr.value),
+                                    "path" => current_data_paths.insert(attr.value),
+                                    "mimeType" => current_mime_types.insert(attr.value),
                                     _ => false,
                                 };
                             }
@@ -149,7 +150,7 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                         if in_intent_filter {
                             for attr in attributes {
                                 if attr.name.local_name == "name" {
-                                    current_intent_filter_permissions.insert(attr.value);
+                                    current_intent_filter_permissions.push(attr.value);
                                 }
                             }
                         }
@@ -164,10 +165,10 @@ pub fn parse_manifest(file_path: &PathBuf, package_filter: Option<&str>) -> Resu
                         if let Some(mut component) = current_component.take() {
                             component.actions = current_actions.clone();
                             component.categories = current_categories.clone();
-                            component.data_schemes = current_schemes.clone();
-                            component.data_hosts = current_hosts.clone();
-                            component.data_paths = current_paths.clone();
-                            component.data_mimeTypes = current_mimeTypes.clone();
+                            component.data_schemes = current_data_schemes.clone();
+                            component.data_hosts = current_data_hosts.clone();
+                            component.data_paths = current_data_paths.clone();
+                            component.data_mime_types = current_mime_types.clone();
                             component.intent_filter_permissions = current_intent_filter_permissions.iter().cloned().collect();
 
                             if let Some(package) = &package_filter {

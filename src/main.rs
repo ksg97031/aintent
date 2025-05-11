@@ -11,7 +11,6 @@ use tokio::sync::Mutex;
 use anyhow::{Result, Context};
 use tracing::{info, error, warn, Level};
 use tracing_subscriber::FmtSubscriber;
-use tree_sitter::Parser as TreeSitterParser;
 mod manifest;
 mod permissions;
 mod utils;
@@ -58,6 +57,7 @@ struct Args {
     log_level: String,
 }
 
+#[allow(dead_code)]
 fn get_permission_level_value(level: &str) -> u8 {
     match level {
         "normal" => 1,
@@ -68,6 +68,7 @@ fn get_permission_level_value(level: &str) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 fn should_show_component(component: &Component, max_level: &str) -> bool {
     let max_level_value = get_permission_level_value(max_level);
     

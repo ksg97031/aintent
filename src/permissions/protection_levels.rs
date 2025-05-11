@@ -216,6 +216,7 @@ lazy_static! {
     };
 }
 
+#[allow(dead_code)]
 pub fn get_permission_protection_level(permission: &str) -> &'static str {
     PERMISSION_PROTECTION_LEVELS.get(permission).unwrap_or(&"normal")
 } 

@@ -13,6 +13,7 @@ use walkdir;
 #[derive(Debug, Clone)]
 pub struct IntentParameter {
     pub name: String,
+    #[allow(dead_code)]
     pub param_type: String,
     pub value: String,
     pub flag: String,  // -a, -c, -e 등의 플래그
@@ -24,9 +25,12 @@ impl fmt::Display for IntentParameter {
     }
 }
 
+#[derive(Debug)]
 pub struct IntentAnalysis {
     pub intent_params: Vec<IntentParameter>,
+    #[allow(dead_code)]
     pub confidence: f64,
+    #[allow(dead_code)]
     pub source_context: String,
 }
 
@@ -368,8 +372,8 @@ fn parse_llm_response(analysis: &Value) -> Result<Vec<IntentParameter>> {
     Ok(params)
 }
 
-fn validate_param_value(flag: &str, _value: &str, param_type: &str) -> bool {
-    // value는 임의로 지정 가능하므로 항상 true 반환
+#[allow(dead_code)]
+fn validate_param_value(_flag: &str, _value: &str, _param_type: &str) -> bool {
     true
 }
 
@@ -434,6 +438,7 @@ pub fn validate_adb_command(params: &[IntentParameter]) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn find_source_file(component: &Component, _source_dir: &str) -> Result<PathBuf> {
     info!("Looking for source file for component: {}", component.name);
     
@@ -508,6 +513,7 @@ pub fn find_source_file(component: &Component, _source_dir: &str) -> Result<Path
     Err(anyhow::anyhow!("Source file not found for component: {}", component.name))
 }
 
+#[allow(dead_code)]
 async fn analyze_with_llm(context: &str, config: &LLMConfig) -> Result<IntentAnalysis, Box<dyn std::error::Error>> {
     let client = Client::new();
     
@@ -676,7 +682,7 @@ pub fn generate_basic_params(component: &Component) -> Vec<IntentParameter> {
     }
 
     // Add MIME type if available
-    if let Some(mime_type) = component.data_mimeTypes.iter().next() {
+    if let Some(mime_type) = component.data_mime_types.iter().next() {
         params.push(IntentParameter {
             name: "type".to_string(),
             param_type: "String".to_string(),
@@ -688,6 +694,7 @@ pub fn generate_basic_params(component: &Component) -> Vec<IntentParameter> {
     params
 }
 
+#[allow(dead_code)]
 pub fn convert_to_intent_parameters(params: &[IntentParameter]) -> Vec<IntentParameter> {
     params.to_vec()
 } 
